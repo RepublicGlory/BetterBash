@@ -1,0 +1,4 @@
+BetterBash-*.tar.gz
+*.so
+*.o
+dist/

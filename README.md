@@ -5,14 +5,16 @@ prompt and ships a few concrete conveniences on top of it.
 
 - **sudo hint** — red `(sudo)` shown before PS1 for `BB_SUDO_TTL` seconds
   (default 180, ~3 min) after you run a `sudo` command. State is in-memory only.
-- **history picker** — `betterbash top` lists the last `BB_HISTORY_COUNT`
+- **history picker** — `betterbash history` lists the last `BB_HISTORY_COUNT`
   (default 10) history entries numbered 1-10; type a number to re-run one.
 - **work bookmarks** — `work add` saves `$PWD`; `work` lists saved paths and
   `cd`s into the one you pick; `work delete` removes `$PWD`.
 - **ghost hints** *(optional)* — a loadable builtin that, when the readline line
-  buffer is pure ASCII, faintly suggests a suffix from the most recent matching
-  history entry. If the buffer contains **any** non-ASCII byte (>= 0x80) it
-  paints nothing (misalignment guard — no column widths are ever computed).
+  buffer is pure ASCII and contains no path character (`/` or `~`), faintly
+  suggests a suffix from the most recent matching history entry. If the buffer
+  contains **any** non-ASCII byte (>= 0x80) or a path character, it paints
+  nothing (misalignment/path guard — no column widths are ever computed, and
+  native Tab completion is never intercepted).
 
 ## Requirements
 
@@ -44,7 +46,7 @@ All variables are overridable **before** BetterBash is sourced:
 | var | default | meaning |
 |-----|---------|---------|
 | `BB_SUDO_TTL`      | `180` | seconds the sudo hint stays after a sudo command |
-| `BB_HISTORY_COUNT` | `10`  | entries listed by `betterbash top` |
+| `BB_HISTORY_COUNT` | `10`  | entries listed by `betterbash history` |
 | `BB_ENABLED`       | `1`   | master switch; `0` disables all rendering |
 | `BB_GHOST`         | `1`   | try to load the ghost builtin; `0` to skip |
 | `BB_HOME`          | `~/.betterbash` | install/state directory |
@@ -54,7 +56,7 @@ All variables are overridable **before** BetterBash is sourced:
 ```sh
 betterbash version                              # prints 0.1.1
 betterbash status                               # list active statuses
-betterbash top                                  # pick from last N history entries
+betterbash history                                  # pick from last N history entries
 betterbash on                                   # re-enable (after off)
 betterbash off                                  # disable (no errors; prompt visually unchanged)
 betterbash register NAME CHECK_FN RENDER_FN     # add your own status
@@ -157,7 +159,7 @@ bash -c 'source ~/.betterbash/betterbash.bash; betterbash version; type work; ty
 bash --noprofile --norc -i <<'INNEREOF'
 source ~/.betterbash/betterbash.bash
 sudo apt update    # red (sudo) then prefixes the next prompts
-betterbash top     # pick from last N history entries
+betterbash history     # pick from last N history entries
 cd /tmp && work add
 work               # pick a saved dir to cd into
 INNEREOF
@@ -172,11 +174,14 @@ INNEREOF
    -> `status_register is a function` and `0.1.1`.
 2. sudo hint: after `sudo apt update` the next prompt is prefixed with red
    `(sudo)` for ~`BB_SUDO_TTL` seconds; expired -> not shown.
-3. `history -s ...; printf '1\n' | betterbash top` -> prints and runs entry 1.
+3. `betterbash history` lists the last N history entries; selecting one opens an
+   editable prompt prefilled with that command — review/edit, then Enter runs
+   it (empty input cancels). Non-interactive stdin just prints the selection.
 4. `work add` from two dirs, then `printf '1\n' | work` -> `cd`s into entry 1;
    `work delete` removes the current dir; re-`work add` is deduped.
 5. `enable -f ~/.betterbash/bbghost.so bbghost; bbghost on` in `bash -c` -> exit
-   0, no crash; `bbghost guard "cafe"` (with accent) -> `SKIP` (guard in place).
+   0, no crash; `bbghost guard "cafe"` (accent) -> `SKIP`; `bbghost guard /etc`
+   -> `SKIP` (path guard). `bbghost test` survives a NULL `rl_line_buffer`.
 6. `install.sh` with `g++` absent from `PATH` -> exits 0, no stderr, installs the
    pure-bash runtime.
 

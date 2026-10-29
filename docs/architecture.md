@@ -11,7 +11,7 @@ core.
   +-- $BB_HOME/betterbash.bash              core runtime
         +-- config + status_register + __bb_status_render
         +-- __bb_install_prompt_hook        single PROMPT_COMMAND hook
-        +-- betterbash dispatcher (on/off/top/version/register)
+        +-- betterbash dispatcher (on/off/history/version/register)
         +-- ghost load: enable -f bbghost.so  (silent -> BB_GHOST=0)
         +-- for f in "$BB_HOME"/modules/*.bash; do source "$f"; done
               +-- modules/sudo.bash   red (sudo) status, in-memory BB_SUDO_AT
@@ -42,10 +42,14 @@ without `$PWD`; `work` lists, reads a number, and `cd`s.
 
 `src/bbghost.cpp` is a Bash loadable builtin. It is wrapped in `extern "C"` so
 the `bbghost_struct` symbol stays unmangled for `enable -f`'s `dlsym`. It hooks
-`rl_redisplay_function`: each redisplay calls the saved original, then — only
-when `rl_line_buffer` contains no byte >= 0x80 — paints a faint suggestion and
-erases it on the next redisplay. Any non-ASCII byte => original redisplay only,
-nothing painted (no width math, no crash).
+`rl_redisplay_function`: each redisplay calls the saved original, then — only when
+`rl_line_buffer` is non-NULL, `rl_end >= 0`, contains no byte >= 0x80, and contains
+no path character (`/` or `~`) — paints a faint suggestion and erases it on the
+next redisplay. Any non-ASCII byte or path character => original redisplay only,
+nothing painted (no width math, no crash). Tab completion is never intercepted;
+it is native readline. The implementation uses stack buffers + `write()` only (no
+malloc), and bounds every string op against `rl_end`, so there are no leaks or
+overflows.
 
 ### Fallback
 

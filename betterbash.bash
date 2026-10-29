@@ -93,16 +93,73 @@ __bb_prompt_hook() {
       bbghost on >/dev/null 2>&1 && __bb_ghost_ready=1
     fi
   fi
+  if [[ ${__bb_tab_native:-0} != 0 ]]; then
+    __bb_tab_native=0
+    __bb_bash_bind_tab
+  fi
   return 0
 }
 
 # ---------------------------------------------------------------------------
 # optional ghost builtin (silent: missing -> BB_GHOST=0)
 # ---------------------------------------------------------------------------
+  __bb_ghost_want=${BB_GHOST:-1}
 if [[ ${BB_GHOST:-1} != 0 && -r $BB_HOME/bbghost.so ]]; then
   enable -f "$BB_HOME/bbghost.so" bbghost 2>/dev/null || BB_GHOST=0
 else
   BB_GHOST=0
+fi
+
+# ---------------------------------------------------------------------------
+# bash fallback for the ghost builtin (used only when bbghost.so is absent):
+# Tab accepts the strict-prefix history suffix; path words defer to native
+# completion. No painting possible without a readline redisplay hook.
+# ---------------------------------------------------------------------------
+__bb_tab_native=0
+
+__bb_bash_suggest() {
+  local line=$1 h
+  [[ -n $line ]] || return 1
+  local -a hist=()
+  mapfile -t hist < <(HISTTIMEFORMAT= builtin history 2>/dev/null |
+    sed 's/^[[:space:]]*[0-9]\+[[:space:]]\+//')
+  local i
+  for ((i = ${#hist[@]} - 1; i >= 0; i--)); do
+    h=${hist[i]}
+    [[ ${#h} -gt ${#line} && ${h:0:${#line}} == "$line" ]] || continue
+    printf '%s' "${h:${#line}}"
+    return 0
+  done
+  return 1
+}
+
+__bb_bash_accept() {
+  local line=$READLINE_LINE word=${READLINE_LINE:0:READLINE_POINT}
+  word=${word##*[[:space:]]}
+  if [[ $word == */* || $word == *~* ]]; then
+    # defer to readline's native completion on the next Tab
+    bind '"\C-i": complete' 2>/dev/null && __bb_tab_native=1
+    return 0
+  fi
+  local sug
+  sug=$(__bb_bash_suggest "$line")
+  if [[ -z $sug ]]; then
+    bind '"\C-i": complete' 2>/dev/null && __bb_tab_native=1
+    return 0
+  fi
+  READLINE_LINE=$line$sug
+  READLINE_POINT=${#READLINE_LINE}
+}
+
+__bb_bash_bind_tab() {
+  [[ $__bb_ghost_want != 0 ]] || return 0
+  [[ $- == *i* ]] || return 0
+  bind -x '"\C-i": __bb_bash_accept' 2>/dev/null
+}
+
+# no native ghost builtin? arm the bash Tab fallback once.
+if ! type -t bbghost >/dev/null 2>&1; then
+  __bb_bash_bind_tab
 fi
 
 # ---------------------------------------------------------------------------
@@ -139,7 +196,7 @@ __bb_install_prompt_command
 # ---------------------------------------------------------------------------
 # PS1 integration (never clobbers the user's PS1; applied once)
 # ---------------------------------------------------------------------------
-__bb_ps1_orig=
+unset __bb_ps1_orig
 __bb_ps1_apply() {
   [[ -z ${__bb_ps1_orig+set} ]] && __bb_ps1_orig=${PS1-}
   case ${PS1-} in
@@ -148,14 +205,14 @@ __bb_ps1_apply() {
   esac
 }
 __bb_ps1_restore() {
-  [[ -n ${__bb_ps1_orig+set} ]] && PS1=$__bb_ps1_orig
+  [[ -z ${__bb_ps1_orig+set} ]] || PS1=$__bb_ps1_orig
 }
 __bb_ps1_apply
 
 # ---------------------------------------------------------------------------
 # history picker
 # ---------------------------------------------------------------------------
-__bb_top() {
+__bb_history() {
   local max=${BB_HISTORY_COUNT:-10} line i=0 choice cmd
   local cmds=()
   while IFS= read -r line; do
@@ -178,8 +235,39 @@ __bb_top() {
     return 1
   fi
   cmd=${cmds[choice-1]}
-  printf '%s\n' "$cmd"
-  eval "$cmd"
+  if [[ -t 0 ]]; then
+    local edited=
+    IFS= read -e -i "$cmd" -p 'edit (Enter=run, empty=cancel): ' edited || edited=
+    [[ -n $edited ]] && eval "$edited"
+  else
+    printf '%s\n' "$cmd"
+  fi
+}
+
+__bb_search() {
+  local q=${1-} line i=0 choice cmd edited
+  [[ -n $q ]] || { printf 'usage: betterbash search <query>\n' >&2; return 2; }
+  local -a hits=()
+  while IFS= read -r line; do
+    hits+=("$line")
+  done < <(HISTTIMEFORMAT= builtin history 2>/dev/null |
+    sed 's/^[[:space:]]*[0-9]\+[[:space:]]\+//' |
+    grep -F -- "$q" | awk '!seen[$0]++' |
+    tail -n "${BB_SEARCH_COUNT:-20}")
+  ((${#hits[@]})) || { printf 'betterbash: no history matches: %s\n' "$q" >&2; return 1; }
+  for line in "${hits[@]}"; do
+    i=$((i+1))
+    printf '%2d %s\n' "$i" "$line"
+  done
+  printf 'select 1-%d (Enter to cancel): ' "${#hits[@]}"
+  IFS= read -r choice || { printf '\n'; return 0; }
+  [[ -n $choice ]] || return 0
+  [[ $choice =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#hits[@]})) || {
+    printf 'betterbash: invalid selection: %s\n' "$choice" >&2; return 1; }
+  cmd=${hits[choice-1]}
+  IFS= read -r -e -i "$cmd" -p 'edit (Enter=run, empty=cancel): ' edited
+  [[ -n $edited ]] && eval "$edited"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -203,15 +291,18 @@ betterbash() {
       for i in "${!BB_STATUS_NAMES[@]}"; do
         "${BB_STATUS_CHECKS[i]}" >/dev/null 2>&1 && \
           printf '%s: %s\n' \
-            "${BB_STATUS_NAMES[i]}" "$("${BB_STATUS_RENDERS[i]}")"
+      "${BB_STATUS_NAMES[i]}" "$(__bb_ps1_decode "$("${BB_STATUS_RENDERS[i]}")")"
       done ;;
-    top)
-      __bb_top ;;
+    history)
+      __bb_history ;;
+    search)
+      shift
+      __bb_search "$@" ;;
     register)
       shift
       status_register "$@" ;;
     *)
-      printf 'usage: betterbash {version|status|top|on|off|register <name> <check> <render>}\n' >&2
+      printf 'usage: betterbash {version|status|history|on|off|search <query>|register <name> <check> <render>}\n' >&2
       return 2 ;;
   esac
 }
